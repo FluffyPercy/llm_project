@@ -296,6 +296,8 @@ def response(inputs, history):
             assistant_message = 'Here is the relevant data.'  
             data_history.update(retrieved_data)
             print('Data retrieved.')
+            # test line #################################
+            # print(str(retrieved_data))
         else:
             assistant_message = 'It seems there is no relevant data.'
             retrieved_data = ['None']
@@ -303,7 +305,7 @@ def response(inputs, history):
         retrieved_data = 'It seems there is no relevant data.'
         print('Data not retrieved.')
     # generate esponse
-    response = chat.send_message(message + [f'\n\n Data assistant: {assistant_message}\n\n'] + list(retrieved_data), stream=True, safety_settings={
+    response = chat.send_message(message + [f'\n\n Data assistant: {assistant_message}\n\n', str(retrieved_data)], stream=True, safety_settings={
         HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_ONLY_HIGH})
     # main 
     # response = chat.send_message(message + ['\n\n', retrieved_data], stream=True, safety_settings={
