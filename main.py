@@ -18,12 +18,14 @@ print('------------------------- vaccine code loaded -------------------------')
 
 
 # Load vaccine data
-dataset = {}
+dataset_V = {}    # a dict of dataframes
 for year in range(2014, 2024):
-    dataset[f'{year}data'] = pd.read_csv(f'./data/{year}VAERSData/{year}VAERSDATA.csv', encoding='latin1')
-    dataset[f'{year}symp'] = pd.read_csv(f'./data/{year}VAERSData/{year}VAERSSYMPTOMS.csv', encoding='latin1')
-    dataset[f'{year}vax'] = pd.read_csv(f'./data/{year}VAERSData/{year}VAERSVAX.csv', encoding='latin1')
+    dataset_V[f'{year}data'] = pd.read_csv(f'./data/{year}VAERSData/{year}VAERSDATA.csv', encoding='latin1')
+    dataset_V[f'{year}symp'] = pd.read_csv(f'./data/{year}VAERSData/{year}VAERSSYMPTOMS.csv', encoding='latin1')
+    dataset_V[f'{year}vax'] = pd.read_csv(f'./data/{year}VAERSData/{year}VAERSVAX.csv', encoding='latin1')
 print('------------------------- vaccine data loaded -------------------------')
+
+
 
 
 
@@ -32,11 +34,12 @@ genai.configure(api_key=os.environ["API_KEY"])
 
 model = genai.GenerativeModel(
     "gemini-1.5-flash",
-    system_instruction="You are a (human) vaccine data expert. \
-        You will begiven some VAERS datasets on human vaccine adverse event reports from 2014 to 2013 (inlc) from the US when needed.\
+    system_instruction="You are a (human) vaccine data expert. You have a helper called 'data assistant' that will retrieve useful data for you in csv format.\
+        Such useful data comes from the VAERS datasets on human vaccine adverse event reports from 2014 to 2013 (inlc) from the US.\
         The datasets include detailed information including specific vaccine type, e.g. plague vaccine, covid vaccine, etc.\
-        You may use the datasets as examples if no specific data is required. \
+        You may use the datasets as examples if no specific data is required.\
         You may use the datasets as examples even when the question is not limited to the US.\
+        Base your response on VAERS data as much as possible, but always mention that selected data from VAERS is used.\
         Be caring and profesional. Give concise answers. Focus your main discussion on vaccines data and the information you can infer from them.\
         Provide additional information with caution. Do NOT give medical advises, instead refer the user to a doctor.",
     )
@@ -48,7 +51,7 @@ chat = model.start_chat(history=[])
 
 ########################## Define different task performers ###########################
 
-# image analysis
+# image analysis bot
 def image_assistant(input_image):
     instruction_prompt = 'If the image is of the skin of a human body part, produce a JSON summary with the following fields: \
         position, estimated_size, shape, color, texture, abnomality. Put "unsure" as the value if unsure for one field.'
@@ -57,22 +60,27 @@ def image_assistant(input_image):
     result = model.generate_content([input_image, '\n\n', instruction_prompt+example_prompt])
     return result.text
 
-
-
-# data retrieval
-def data_assistant(input_text, vc = vaccine_code, ds = dataset):
+# input extract bot
+def input_extract(input_text: str) -> dict:
     # find the relevant information in the input
-    instruction_condense = 'Instruction: Find the relevant components in the input and generate a JSON file with possible fields of\
-         "year", "ID", "vaccine", "disease", "symptoms", "age", "sex", "died" or other info that you deem relevant, where one ID represents a patient or person or report.\
+    instruction_condense = 'Instruction: Find medical and patient related key-value pairs in the input. Respond "None" if no such info found.\
+        Possible keys are "year", "date", "ID", "vaccine", "disease", "symptoms", "age", "sex", "died" or similar fields,\
+        where one ID represents a patient or person or report.\
+        Only use key words that are given or implied in the input.\
+        If the input does not concern the datasets/reports, vaccine side effects, vaccine receivers or information similar to above, respond "None".\
         If the input has a field requiring specific information, e.g. vaccine name, symptoms and age, return in the format\
-            {"vaccine": "(vaccine name)", "symptoms": "(symptom name)", "age": (int) or string discription (young, old, etc.)}.\
+            {"vaccine": "(vaccine name)", "symptoms": "(symptom name)", "age": (int) or string discription (young, old, under 30, etc.)}.\
         If the input has a field requiring general information, e.g. all symptoms concerning COVID vaccine, return in the format\
             {"symptoms": "all", "vaccine": "COVID"}.\
         The "year" key can only have value of an integer between 2014 to 2023 (incl.) or a list of such integers; "recent years" count as the last three years;\
             do not include "year" key if unsure of year(s).\
+        The "age" key, if present, can be a ganeral age group, eg old, children, middle-age, etc.\
+        The word "side effects" or similar should be associated with "symptoms".\
         If both women and men are mentioned, set value "all" for "sex" key.\
-        If the input does not concern the datasets/reports, vaccine side effects or vaccine receivers, respond "None". \n\n'
+        The values can contain "and" or "or" if several values are concerned.\n\n'
     # example prompt
+    instruction_condense += 'Example input-output: "Hi.", "None".\n'
+    instruction_condense += 'Example input-output: "Thank you!", "None".\n'
     instruction_condense += 'Example input-output: "What are the most common symptoms caused by corona vaccines?", "{"symptoms": "all", "vaccine": "COVID"}".\n'
     instruction_condense += 'Example input-output: "Should I get TBE vaccine?", "{"vaccine": "TBE"}".\n'
     instruction_condense += 'Example input-output: "What are the most popular vaccines in the US?", "None".\n'
@@ -83,14 +91,38 @@ def data_assistant(input_text, vc = vaccine_code, ds = dataset):
     instruction_condense += 'Example input-output: "Do women or men get more side effects from COVID vaccines?", "{"vaccine": "COVID", "sex": "all"}".\n'
     instruction_condense += 'Example input-output: "How many people reported in year 2018 and 2019?", "{"ID": "all", "year": [2018, 2019]}".\n'
     instruction_condense += 'Example input-output: "What is the trend of adverse event reports for polio vaccine?", "{"vaccine": "polio"}".\n'
-    instruction_condense += 'IMPORTANT: only respond with above JSON format or "None".'
+    instruction_condense += 'Example input-output: "What are the most common side effects from flu vaccine among children?", "{"vaccine": "flu", "age": "children", "symptoms": "all"}".\n'
+    instruction_condense += 'Example input-output: "Are children or seniors more susceptible to COVID vaccine side effects?", "{"vaccine": "COVID", "age": "children or old", "symptoms": "all"}".\n'
+    instruction_condense += 'Example input-output: "How deadly is COVID vaccine for young adults?", "{"vaccine": "COVID", "symptoms": "death", "age": "young adults"}".\n'
+    instruction_condense += 'Example input-output: "Is the above respondse based on the VAERS database?", "None".\n'
+    instruction_condense += 'Example input-output: "Hello.", "None".\n'
+    # force format of output
+    instruction_condense += '**IMPORTANT**: ONLY RESPOND "None" OR DICTIONARY WITH ABOVE  FORMAT. \
+        DICTIONARY MUST BE INFERRED FROM INPUT. DO NOT EXPLAIN. DO NOT INCLUDE LINE BREAKS.'
     # generated condensed input
-    input_condensed = model.generate_content([input_text, '\n\n', instruction_condense]).text
-    print('Data request:', input_condensed)
-    if 'None' in input_condensed:
+    extracted_request = model.generate_content([input_text, '\n\n', instruction_condense], safety_settings={
+        HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_ONLY_HIGH}).text
+    # # test
+    # print(extracted_request.replace("'", '"'))
+    # print(json.loads(extracted_request.replace("'", '"')))
+    # # test end
+
+    try:
+        extracted_request = json.loads(extracted_request.replace("'", '"'))
+        print('Extracted input:', extracted_request)
+        return extracted_request
+    except:
+        # print('Input extract request failed: invalid output format for input_extract ', type(extracted_request))
         return None
-    else:
-        pass
+
+
+# data retrieval bot
+def data_assistant(extracted_input, vc = vaccine_code, ds = dataset_V) -> list:
+    '''
+    Input: extracted input
+    Output: a list of actions taken on files, plus a sub-dict of vaccine codes
+    '''
+    input_dict = input_extract(extracted_input)
     # instrcution prompt
     instructions = f"INSTRUCTION: You are assisting a programmer on data retrieval. \
         Follow the following instruction to give information for accessing the relevant parts of the VAERS datasets,\
@@ -118,24 +150,35 @@ def data_assistant(input_text, vc = vaccine_code, ds = dataset):
                 VAX_CODE: \n{vc}.\n\
             If the requied vaccine or decease has only a vague description, e.g. corona or flu, you should take all relevant vaccines in to consideration.\
             If year is not specified, consider all years (2014-2013 incl.).\
+            If 'age' key has a general description string value, consider:\n\
+                    'infant' to be age 0 to 3,\
+                    'children' to be age 0 to 14,\
+                    'teenager' to be age 12 to 19,\
+                    'young adult' to be age 18 to 35,\
+                    'middle-age' to be age 35 to 60,\
+                    'old' to be 60+,\
+                    use common sense to determine the age for other string values.\n\
+            The 'ID' key corresponds to 'VAERS_ID', and should only have up to 10 numbers or 'all' as  value in your output.
             If a symptom is mentioned, you should consider all similar symptoms, e.g. 'sick' and 'nausea';\n'''
     instructions += '3. Output a list of dictionaries of the format:\
-            [{"filename_1": filename, "filter": {"trait_column_1": ["trait"], "trait_column_2": ["trait",..., "trait"]}, "info": ["info_column", "info_coumn"]}, ..., \
-                {"filename_n": filename, "filter": {"trait_column_1": ["trait",..., "trait"]}, "info": ["info_column",..., "info_column"]}, \
+            [{"filename": filename, "filter": {"trait_column_1": ["trait"], "trait_column_2": ["trait",..., "trait"]}, "info": ["info_column", "info_coumn"]}, ..., \
+                {"filename": filename, "filter": {"trait_column_1": ["trait",..., "trait"]}, "info": ["info_column",..., "info_column"]}, \
                 sub_VAX_CODE].\n\
-            All trait_column and info_column should be actual columns in a file with filename. All traits should be possible values under the column, infered from input.\
+            All trait_column and info_column should be actual columns in a file with filename. All traits should be possible values under the column, inferred from input.\
                 "VAX_TYPE" traits should be vaccine codes given as keys in VAX_CODE.\
-                If need trait_column and info_column from different files, draw these files seperately.\n\
+                "AGE" traits should be a list of numbers and only numbers.\
+                Time/date related information is in the "RECVDATE" column in "{year}data" files.\
+                If need trait_column and info_column from different files, draw these files separately.\n\
             The purpose of this output is to later perform i)finding the correct files: i)for each "filename_k", \n\
                 file_df = ds[filename];\
-            ii) filtering of VAERS_ID numbers accoridng to traits: for each "trait_column_m",\n\
+            ii) filtering of VAERS_ID numbers according to traits: for each "trait_column_m",\n\
                 ID_m = file_df.loc[file_df["trait_column_m"] in ["trait",..., "trait"], "VAERS_ID"].tolist(); \n\
             iii) let ID_filtered be the intersection of ID_1,..., ID_m, then use it to generate a filtered-dataframe from the same file or a different file of the same year with these traits:\n\
                 filtered_df = ds[filename].loc[df["VAERS_ID"].isin(ID_filtered)]; and\n\
             iv) return filtered dataframe, or further extract only relevant columns:\n\
                 sub_df["info_column", ..., "info_column"].\n\
-            v) after all above is done for all files involved, the a sub-dict of VAX_CODE, denoted by sub_VAX_CODE, is used for further referecne,\
-                which contains all vaccines relevant to what is meantioned in the input (as vaccine or disease). Retrun empty dict if no specific vaccine or disease is concerned.\
+            v) after all above is done for all files involved, the a sub-dict of VAX_CODE, denoted by sub_VAX_CODE, is used for further reference,\
+                which contains all vaccines relevant to what is mentioned in the input (as vaccine or disease). Return empty dict if no specific vaccine or disease is concerned.\
             Explanation of the output:\
                 The list contains information of all files needed. For each file, filename, relevant trait filters and relevant columns are given.\
                     You may call each file at most once.\
@@ -148,59 +191,83 @@ def data_assistant(input_text, vc = vaccine_code, ds = dataset):
     instructions += "ADDITIONAL INFO: All COVID related requests only concern year 2020 and onwards"
     # example prompt
     instructions += 'Example input: "{"symptoms": "all", "vaccine": "COVID"}";\
-        output: [{"filename_1": "2020vax", "filter": {"VAX_TYPE": ["COVID19", "COVID19_2"]}, "info": []},\
-                {"filename_2": "2020symp", "filter": {}, "info": ["SYMPTOM1", "SYMPTOMVERSION1", "SYMPTOM2", "SYMPTOMVERSION2", "SYMPTOM3", "SYMPTOMVERSION3", "SYMPTOM4", "SYMPTOMVERSION4", "SYMPTOM5", "SYMPTOMVERSION5"]}\
-                {"filename_3": "2021vax", "filter": {"VAX_TYPE": ["COVID19", "COVID19_2"]}, "info": []},\
-                {"filename_4": "2021symp", "filter": {}, "info": ["SYMPTOM1", "SYMPTOMVERSION1", "SYMPTOM2", "SYMPTOMVERSION2", "SYMPTOM3", "SYMPTOMVERSION3", "SYMPTOM4", "SYMPTOMVERSION4", "SYMPTOM5", "SYMPTOMVERSION5"]}\
-                {"filename_5": "2022vax", "filter": {"VAX_TYPE": ["COVID19", "COVID19_2"]}, "info": []},\
-                {"filename_6": "2022symp", "filter": {}, "info": ["SYMPTOM1", "SYMPTOMVERSION1", "SYMPTOM2", "SYMPTOMVERSION2", "SYMPTOM3", "SYMPTOMVERSION3", "SYMPTOM4", "SYMPTOMVERSION4", "SYMPTOM5", "SYMPTOMVERSION5"]}\
-                {"filename_7": "2023vax", "filter": {"VAX_TYPE": ["COVID19", "COVID19_2"]}, "info": []},\
-                {"filename_8": "2023symp", "filter": {}, "info": ["SYMPTOM1", "SYMPTOMVERSION1", "SYMPTOM2", "SYMPTOMVERSION2", "SYMPTOM3", "SYMPTOMVERSION3", "SYMPTOM4", "SYMPTOMVERSION4", "SYMPTOM5", "SYMPTOMVERSION5"]}\
+        output: [{"filename": "2020vax", "filter": {"VAX_TYPE": ["COVID19", "COVID19_2"]}, "info": []},\
+                {"filename": "2020symp", "filter": {}, "info": ["SYMPTOM1", "SYMPTOMVERSION1", "SYMPTOM2", "SYMPTOMVERSION2", "SYMPTOM3", "SYMPTOMVERSION3", "SYMPTOM4", "SYMPTOMVERSION4", "SYMPTOM5", "SYMPTOMVERSION5"]},\
+                {"filename": "2021vax", "filter": {"VAX_TYPE": ["COVID19", "COVID19_2"]}, "info": []},\
+                {"filename": "2021symp", "filter": {}, "info": ["SYMPTOM1", "SYMPTOMVERSION1", "SYMPTOM2", "SYMPTOMVERSION2", "SYMPTOM3", "SYMPTOMVERSION3", "SYMPTOM4", "SYMPTOMVERSION4", "SYMPTOM5", "SYMPTOMVERSION5"]},\
+                {"filename": "2022vax", "filter": {"VAX_TYPE": ["COVID19", "COVID19_2"]}, "info": []},\
+                {"filename": "2022symp", "filter": {}, "info": ["SYMPTOM1", "SYMPTOMVERSION1", "SYMPTOM2", "SYMPTOMVERSION2", "SYMPTOM3", "SYMPTOMVERSION3", "SYMPTOM4", "SYMPTOMVERSION4", "SYMPTOM5", "SYMPTOMVERSION5"]},\
+                {"filename": "2023vax", "filter": {"VAX_TYPE": ["COVID19", "COVID19_2"]}, "info": []},\
+                {"filename": "2023symp", "filter": {}, "info": ["SYMPTOM1", "SYMPTOMVERSION1", "SYMPTOM2", "SYMPTOMVERSION2", "SYMPTOM3", "SYMPTOMVERSION3", "SYMPTOM4", "SYMPTOMVERSION4", "SYMPTOM5", "SYMPTOMVERSION5"]},\
                 {"COVID19": "Coronavirus 2019 vaccine", "COVID19-2": "Coronavirus 2019 vaccine, bivalent"}].\n\n'
     instructions += 'Example input: "{"age": "old", "year": "2021, 2022, 2023"}";\
-        output: [{"filename_1": "2021data", "filter": {"AGE_YRS", [60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100]}, "info": []},\
-                {"filename_2": "2022data", "filter": {"AGE_YRS", [60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100]}, "info": []},\
-                {"filename_3": "2023data", "filter": {"AGE_YRS", [60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100]}, "info": []},\
+        output: [{"filename": "2021data", "filter": {"AGE_YRS", [60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100]}, "info": []},\
+                {"filename": "2022data", "filter": {"AGE_YRS", [60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100]}, "info": []},\
+                {"filename": "2023data", "filter": {"AGE_YRS", [60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100]}, "info": []},\
                 {}].\n\n'
     instructions += 'Example input: "{"vaccine": "COVID", "sex": "all"}";\
-        output: [{"filename_1": "2020vax", "filter": {"VAX_TYPE": ["COVID19", "COVID19_2"]}, "info": []},\
-                {"filename_2": "2020data", "filter": {}, "info": ["SEX"]}\
-                {"filename_3": "2021vax", "filter": {"VAX_TYPE": ["COVID19", "COVID19_2"]}, "info": []},\
-                {"filename_4": "2021data", "filter": {}, "info": ["SEX"]}\
-                {"filename_5": "2022vax", "filter": {"VAX_TYPE": ["COVID19", "COVID19_2"]}, "info": []},\
-                {"filename_6": "2022data", "filter": {}, "info": ["SEX"]}\
-                {"filename_7": "2023vax", "filter": {"VAX_TYPE": ["COVID19", "COVID19_2"]}, "info": []},\
-                {"filename_8": "2023data", "filter": {}, "info": ["SEX"]}\
+        output: [{"filename": "2020vax", "filter": {"VAX_TYPE": ["COVID19", "COVID19_2"]}, "info": []},\
+                {"filename": "2020data", "filter": {}, "info": ["SEX"]},\
+                {"filename": "2021vax", "filter": {"VAX_TYPE": ["COVID19", "COVID19_2"]}, "info": []},\
+                {"filename": "2021data", "filter": {}, "info": ["SEX"]},\
+                {"filename": "2022vax", "filter": {"VAX_TYPE": ["COVID19", "COVID19_2"]}, "info": []},\
+                {"filename": "2022data", "filter": {}, "info": ["SEX"]},\
+                {"filename": "2023vax", "filter": {"VAX_TYPE": ["COVID19", "COVID19_2"]}, "info": []},\
+                {"filename": "2023data", "filter": {}, "info": ["SEX"]},\
                 {"COVID19": "Coronavirus 2019 vaccine", "COVID19-2": "Coronavirus 2019 vaccine, bivalent"}].\n\n'
-
-
-    instructions += "**IMPORTANT**: ONLY REPLY WITH A LIST OF THE ABOVE FORMAT OR 'None'."
-    result = model.generate_content(['Please perform the task for: '+ input_condensed,'\n\n', instructions]).text
-    
+    instructions += 'Example input: "{"vaccine": "lyme", "age": "children", "symptoms": "all", "year": "2019 to 2021"}";\
+        output: [{"filename": "2019vax", "filter": {"LYME": ["COVID19", "COVID19_2"]}, "info": []},\
+                {"filename": "2019data", "filter": {"AGE_YRS":[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]}, "info": []},\
+                {"filename": "2019symp", "filter": {}, "info": ["SYMPTOM1", "SYMPTOMVERSION1", "SYMPTOM2", "SYMPTOMVERSION2", "SYMPTOM3", "SYMPTOMVERSION3", "SYMPTOM4", "SYMPTOMVERSION4", "SYMPTOM5", "SYMPTOMVERSION5"]},\
+                [{"filename": "2020vax", "filter": {"LYME": ["COVID19", "COVID19_2"]}, "info": []},\
+                {"filename": "2020data", "filter": {"AGE_YRS":[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]}, "info": []},\
+                {"filename": "2020symp", "filter": {}, "info": ["SYMPTOM1", "SYMPTOMVERSION1", "SYMPTOM2", "SYMPTOMVERSION2", "SYMPTOM3", "SYMPTOMVERSION3", "SYMPTOM4", "SYMPTOMVERSION4", "SYMPTOM5", "SYMPTOMVERSION5"]},\
+                [{"filename": "2021vax", "filter": {"LYME": ["COVID19", "COVID19_2"]}, "info": []},\
+                {"filename": "2021data", "filter": {"AGE_YRS":[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]}, "info": []},\
+                {"filename": "2021symp", "filter": {}, "info": ["SYMPTOM1", "SYMPTOMVERSION1", "SYMPTOM2", "SYMPTOMVERSION2", "SYMPTOM3", "SYMPTOMVERSION3", "SYMPTOM4", "SYMPTOMVERSION4", "SYMPTOM5", "SYMPTOMVERSION5"]},\
+                {"LYME": "Lyme disease vaccine"}].\n\n'
+    instructions += 'Example input: "{"vaccine": "COVID", "age": "children or old", "symptoms": "all", "year":2015}";\
+        output: [{"filename": "2015vax", "filter": {"VAX_TYPE": ["COVID19", "COVID19_2"]}, "info": []},\
+                {"filename": "2015data", "filter": {"AGE_YRS":[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100]}, "info": []},\
+                {"filename": "2015symp", "filter": {}, "info": ["SYMPTOM1", "SYMPTOMVERSION1", "SYMPTOM2", "SYMPTOMVERSION2", "SYMPTOM3", "SYMPTOMVERSION3", "SYMPTOM4", "SYMPTOMVERSION4", "SYMPTOM5", "SYMPTOMVERSION5"]},\
+                {"COVID19": "Coronavirus 2019 vaccine", "COVID19-2": "Coronavirus 2019 vaccine, bivalent"}].\n\n'
+    instructions += "**IMPORTANT**: ONLY RESPOND WITH A LIST OF THE ABOVE FORMAT OR 'None'. DO NOT EXPLAIN. DO NOT INCLUDE LINE BREAKS."
+    result = model.generate_content(['Please perform the task for: '+ str(input_dict),'\n\n', instructions],\
+                                    safety_settings={
+                                    HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_ONLY_HIGH}).text
     ## test
-    # print('test, all text output: ', result)
+    # print('TEST data_assistant, all text output: ', result)
     # print('test, try JSON: ', result.split('\n')[1])
     # test_result = json.loads('[' + result.split('\n')[0].replace("'", '"') + ']')
     # print('test, after JSON', test_result)
     ## test end
-
     try:
-        result = json.loads('[' + result.split('\n')[1].replace("'", '"') + ']')
-        print('Data request succeeded: \n', result)
+        result = json.loads(result.replace("'", '"'))
+        print('Data assistant request sent.')
         return result
     except:
-        print('Data request failed: \n', result)
-        return None
+        try:
+            result = json.loads(result.split('\n')[1])
+            print('Data assistant request sent.')
+            return result
+        except:
+            print('Data not requested.')
+            # print('Data assistant request failed: invalid format for data_assistant output \n', result[:3] + ', ...')
+            return None
 
-## test
-# print('test data_assistant: ', data_assistant('What symptoms are most common among plague vaccine receivers?'))
-## test end
+# # test
+# output = data_assistant('What symptoms are most common among plague vaccine receivers under age 20?')
+# print('data_assistant output type: ', type(output))
+# # test end
 
 
+# retrieved data in pandas format
+data_history = {}
 
 # user facing component
 def response(inputs, history):
     message = [inputs["text"]]
+    # image processing
     if len(inputs["files"]) != 0:
         try:
             sample_image = PIL.Image.open(inputs["files"][0]["path"])
@@ -216,8 +283,31 @@ def response(inputs, history):
             return None
     else:
         pass
-    response = chat.send_message(message, stream=True, safety_settings={
-        HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE})
+    # data retrieval
+    # # test ####################################
+    # retrieved_data = data_retrieve(message[0])
+    # data_history.update(retrieved_data)
+    # assistant_message = 'Here is the relevant data.'  
+    # print('Data retrieved.')
+    # # test end ################################
+    try:
+        retrieved_data = data_retrieve(message[0])
+        if retrieved_data:
+            assistant_message = 'Here is the relevant data.'  
+            data_history.update(retrieved_data)
+            print('Data retrieved.')
+        else:
+            assistant_message = 'It seems there is no relevant data.'
+            retrieved_data = ['None']
+    except:
+        retrieved_data = 'It seems there is no relevant data.'
+        print('Data not retrieved.')
+    # generate esponse
+    response = chat.send_message(message + [f'\n\n Data assistant: {assistant_message}\n\n'] + list(retrieved_data), stream=True, safety_settings={
+        HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_ONLY_HIGH})
+    # main 
+    # response = chat.send_message(message + ['\n\n', retrieved_data], stream=True, safety_settings={
+    #     HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_ONLY_HIGH})
     full_response = ""
     for partial_response in response:
         time.sleep(0.2)
@@ -232,6 +322,94 @@ def response(inputs, history):
 
 
 
+
+
+
+########################## Data Retrieval Functions ###########################
+
+
+# Filtering: filter IDs by traits in columns
+def data_filter(df: pd.DataFrame, filter: dict) -> pd.DataFrame:
+    '''
+    Input: individual dataframe
+    Output: filtered dataframe
+    '''
+    # generate intersection of IDs that have given traits
+    if len(filter) == 0:
+        return df
+    else:
+        IDs = None
+        for column in filter:
+            if IDs:
+                IDs &= df.loc[df[column].isin(filter[column]), "VAERS_ID"].tolist()
+            else:
+                IDs = df.loc[df[column].isin(filter[column]), "VAERS_ID"].tolist()
+        ## test line
+        # print(IDs)
+        # generate sub-dataframe with IDs
+        filtered_df = df.loc[df["VAERS_ID"].isin(IDs)]
+        return(filtered_df)
+
+
+# Extraction: extract sub-dataframe with certain columns
+def data_extract(df: pd.DataFrame, filter: list) -> pd.DataFrame:
+    '''
+    Input: individual dataframe
+    Output: sub-dataframe with certain columns
+    '''
+    if len(filter) == 0:
+        return df
+    else:
+        return df[filter]
+
+
+
+# Retrieval: yield final retrieved data for user-facing component
+def data_retrieve(input: str, ds = dataset_V) -> str:
+    '''
+    Input: list from data_assistant
+    Output: csv and dict in 'str'
+    '''
+    # # test line
+    # action_list = data_assistant(input)
+    try:
+        action_list = data_assistant(input)
+        file_nr = len(action_list)
+    except:
+        return None
+    data_hist = {}
+    # # test line
+    # print(action_list)
+    for i in range(file_nr-1):
+        action = action_list[i]# {"filename_1": filename, "filter": {"trait_column_1": ["trait"], etc}, "info": ["info_column", etc]}
+
+        # # test
+        # file_ds = ds[action['filename']]
+        # filter = action['filter']
+        # info = action['info']
+        # # test end
+
+        try:
+            file_ds = ds[action['filename']]
+            filter = action['filter']
+            info = action['info']
+        except:
+            print('Data retrieval failed: Incorrect format ', action)
+            return None
+        filtered_df = data_filter(file_ds, filter)
+        extract_df = data_extract(filtered_df, info)
+        data_hist[action['filename']] = extract_df
+    data_hist['VAX_CODE'] = str(action_list[-1])
+    return data_hist
+
+
+# # test
+# output = data_retrieve('What symptoms are most common among plague vaccine receivers under age 20?')
+# print('data_retrieve output type: ', type(output))
+# # test end
+
+
+
 ########################## Assemble chatbot ###########################
 
 with gr.Blocks(fill_height=True, fill_width=True) as demo:
@@ -240,7 +418,8 @@ with gr.Blocks(fill_height=True, fill_width=True) as demo:
         title="VAERS Vaccine Database Assitant",
         multimodal=True,
         description='An assistant for accessing the VAERS data from the past 10 years. **Warning: Not suitable for actual medical practice.**',
-        examples=[{'text':"Are children or seniors more susceptible to COVID vaccine side effects?"}, {'text':"Print a list of all reports on flu."}]
+        examples=[{'text':"Are children or seniors more susceptible to COVID vaccine side effects?"},\
+                   {'text':"What are the most common side effects from flu vaccine among children?"}]
     )
 
 
@@ -259,3 +438,5 @@ if __name__ == "__main__":
 # problem1: must terminate manually
 # problem2: gradio textbox is partially blank
 # problem3: cannot perform statistics
+# problem4: cannot perform too complicated filtering with boolean operations
+# problem5: Irrelevant data is requested, eg 'hello' gets data back
